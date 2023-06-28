@@ -1,0 +1,31 @@
+import axios from 'axios';
+
+const urlSeats = 'https://my.laphil.com/en/rest-proxy/TXN/Packages/1193/Seats?constituentId=0&modeOfSaleId=26&packageId=1193';
+const resSectionArr = await axios.get('https://my.laphil.com/en/rest-proxy/TXN/PriceTypes/Details?modeOfSaleId=26&packageId=1193&sourceId=6259');
+const sectionData = resSectionArr.data[0].Zones;
+const priceArr = await axios.get('https://my.laphil.com/en/rest-proxy/TXN/Packages/1193/Prices?expandPerformancePriceType=&includeOnlyBasePrice=&modeOfSaleId=26&priceTypeId=&sourceId=6259');
+const res = await axios.get(urlSeats);
+const resArr = [];
+for(let el of res.data) {
+    if(el.SeatStatusId === 0 && el.IsSeat === true ) {
+        const sectionId = sectionData.find((item) => item.Id === el.ZoneId);
+        const priceArrQWE = [];
+        for(let i of priceArr.data) {
+            if(el.ZoneId === i.ZoneId) {
+                priceArrQWE.push(i.Price);
+            }
+        }
+        const amountPrice = priceArrQWE.pop();
+        resArr.push({
+            row: el.SeatRow,
+            seatNumber: el.SeatNumber,
+            section: sectionId.Description,
+            price: {
+                packageArr: priceArrQWE,
+                amount: amountPrice
+            }
+        });
+    }
+}
+
+// console.log(JSON.stringify(resArr));
