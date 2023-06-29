@@ -1,86 +1,133 @@
 import express, {NextFunction, Request, Response} from 'express';
 import axios from "axios";
 import {pipe} from "fp-ts/function";
+import * as O from 'fp-ts/Option';
 import * as E from 'fp-ts/Either';
-const app = express();
+import {forSeatArr, Section, Price} from "./create.seat";
 
-app.get('/:id', getAvailableSeats);
+(()=> {
+    const app = express();
 
-app.listen(3000, ()=> {
-    console.log('Server started');
-});
+    app.get('/:id', getAvailableSeats);
+
+    app.listen(3000, ()=> {
+        console.log('Server started');
+    });
+})()
+
+export let sectionData: Array<Section>;
+export let priceArrData: Array<Price>;
+
 export interface Seat {
     row: string,
     seatNumber: string,
     section: string,
     price: {
         packageArr: number[],
-        amount: number
+        amount?: number
     }
 }
 
 export interface Id {
     _tag: 'Id',
-    value: number | string
+    value: string
+}
+
+export type WrongIdType = {
+    _tag: 'WrongIdType',
+    message: string
+}
+
+export type IdNotFoundType = {
+    _tag: 'IdNotFoundType',
+    message: string
 }
 async function getAvailableSeats(req: Request, res: Response, next: NextFunction) {
-    const pipeline = pipe(
-        req.params.id,
-        of,
-        validate,
-
-    );
-    if(pipeline._tag === 'Left') {
-       return res.status(404).send(pipeline.left);
+    const performanceId: WrongIdType | Id = pipeValidateId(req.params.id)
+    if(performanceId._tag === 'WrongIdType') {
+        return res.status(404).send(performanceId.message)
     }
-    const resSectionArrData = await axios.get(`https://my.laphil.com/en/rest-proxy/TXN/PriceTypes/Details?modeOfSaleId=26&packageId=${pipeline.right.value}&sourceId=6259`);
-    if(resSectionArrData.data.length === 0) {
+    const ok = await pipeExistsPerformance(performanceId);
+    if(typeof ok === 'string') {
         return res.status(404).send('Performance with this Id not found');
     }
-    const sectionData = resSectionArrData.data[0].Zones;
-    const urlSeatsData = await axios.get(`https://my.laphil.com/en/rest-proxy/TXN/Packages/${pipeline.right.value}/Seats?constituentId=0&modeOfSaleId=26&packageId=${pipeline.right.value}`);
 
-    const priceArrData = await axios.get(`https://my.laphil.com/en/rest-proxy/TXN/Packages/${pipeline.right.value}/Prices?expandPerformancePriceType=&includeOnlyBasePrice=&modeOfSaleId=26&priceTypeId=&sourceId=6259`);
-    const resArr = [];
-    for(let el of urlSeatsData.data) {
-        if(el.SeatStatusId === 6) { //Seats locked now
-            break;
-        }
-        if(el.SeatStatusId === 0 && el.IsSeat === true) { //Seats available
-            const section = sectionData.find((item: any)=> item.Id === el.ZoneId);
-            const priceArr = [];
-            for(let i of priceArrData.data) {
-                if(el.ZoneId === i.ZoneId) {
-                    priceArr.push(i.Price);
-                }
-            }
-            const amountPrice = priceArr.pop();
-            const newSeat: Seat = {
-                row: el.SeatRow,
-                seatNumber: el.SeatNumber,
-                section: section.Description,
-                price: {
-                    packageArr: priceArr,
-                    amount: amountPrice
-                }
-            }
-            resArr.push(newSeat);
-        }
-    }
-    res.json(resArr);
+    await pipeGetPriceData(performanceId);
+    const resultArr = await pipeGetSeatData(performanceId);
+    console.log(resultArr.length);
+    res.json(resultArr);
 }
 
-function of(value: number | string): Id {
+function of(value: string): Id {
     return {
         _tag: 'Id',
         value: value
     }
 }
 
-function validate(id: Id): E.Either<string, Id> {
+function validate(id: Id): E.Either<WrongIdType, Id> {
     if(/^\d+$/.test(id.value as string)) {
         return E.right(id);
     } else {
-        return E.left('Wrong Id')
+        return E.left({_tag: 'WrongIdType', message: 'Wrong Id'})
     }
 }
+
+function pipeValidateId(id: string): WrongIdType | Id {
+    return pipe(
+        id,
+        of,
+        validate,
+        E.matchW(
+            (e: WrongIdType)=> e,
+            (id: Id)=> id
+        )
+    );
+}
+
+async function pipeExistsPerformance(performanceId: Id): Promise<string | Section[]> {
+    return pipe(
+        await axios.get(`https://my.laphil.com/en/rest-proxy/TXN/PriceTypes/Details?modeOfSaleId=26&packageId=${performanceId.value}&sourceId=6259`),
+        O.fromPredicate(
+            (a)=> a.data.length !== 0
+        ),
+        O.matchW(
+            ()=> 'Performance with this Id not found',
+            (a)=> {
+                sectionData = a.data[0].Zones;
+                return sectionData;
+            }
+        ),
+    )
+}
+
+async function pipeGetPriceData(performanceId: Id): Promise<boolean> {
+    return pipe(
+        O.some(await axios.get(`https://my.laphil.com/en/rest-proxy/TXN/Packages/${performanceId.value}/Prices?expandPerformancePriceType=&includeOnlyBasePrice=&modeOfSaleId=26&priceTypeId=&sourceId=6259`)),
+        O.map(
+            (a)=>a.data
+        ),
+        O.match(
+            ()=> false,
+            (a)=> {
+                priceArrData = a
+                return true
+            }
+        )
+    )
+}
+
+async function pipeGetSeatData(performanceId: Id) {
+    return pipe(
+        O.some(await axios.get(`https://my.laphil.com/en/rest-proxy/TXN/Packages/${performanceId.value}/Seats?constituentId=0&modeOfSaleId=26&packageId=${performanceId.value}`)),
+        O.map((
+            (a)=> a.data
+        )),
+        O.match(
+            ()=> true,
+            (a)=> a
+        ),
+        forSeatArr
+    )
+}
+
